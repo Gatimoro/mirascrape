@@ -1,0 +1,28 @@
+[project]
+name = "mirascraper"
+version = "0.1.0"
+description = "Valencia property scraper for Idealista"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.27",
+    "selectolax>=0.3",
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "supabase>=2.0,<2.10",
+    "typer>=0.12",
+    "tenacity>=8.0",
+    "python-dotenv>=1.0",
+    "patchright>=0.5",
+]
+
+[project.scripts]
+mirascraper = "src.cli:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.2",
+]

@@ -8,7 +8,9 @@
       "Bash(uv add:*)",
       "WebSearch",
       "WebFetch(domain:curl-cffi.readthedocs.io)",
-      "WebFetch(domain:pypi.org)"
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:spain-real.estate)",
+      "Bash(python -m pytest tests/test_spain_real_estate.py -v)"
     ]
   }
 }

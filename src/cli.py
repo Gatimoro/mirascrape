@@ -8,8 +8,21 @@ from pathlib import Path
 import typer
 
 from src.models import Property
+from src.scrapers.base import BaseScraper
 
 app = typer.Typer(help="Mirascraper - Valencia property scraper")
+
+
+def _get_scraper(source: str) -> BaseScraper:
+    """Return the right scraper instance for the given source."""
+    if source == "idealista":
+        from src.scrapers.idealista import IdealistaScraper
+        return IdealistaScraper()
+    if source == "spain-real-estate":
+        from src.scrapers.spain_real_estate import SpainRealEstateScraper
+        return SpainRealEstateScraper()
+    typer.echo(f"Unknown source: {source}. Available: idealista, spain-real-estate")
+    raise typer.Exit(code=1)
 
 
 def _setup_logging(verbose: bool = False) -> None:
@@ -35,15 +48,9 @@ def scrape(
 ) -> None:
     """Scrape property listings and save as JSONL."""
     _setup_logging(verbose)
-    if source != "idealista":
-        typer.echo(f"Unknown source: {source}")
-        raise typer.Exit(1)
-
-    from src.scrapers.idealista import IdealistaScraper
-
     output.mkdir(parents=True, exist_ok=True)
 
-    with IdealistaScraper() as scraper:
+    with _get_scraper(source) as scraper:
         properties = scraper.scrape(
             listing_type=listing_type,
             max_pages=max_pages,
@@ -99,12 +106,11 @@ def run(
 ) -> None:
     """Scrape + sync in one step."""
     _setup_logging(verbose)
-    from src.scrapers.idealista import IdealistaScraper
     from src.db import upsert_properties
 
     output.mkdir(parents=True, exist_ok=True)
 
-    with IdealistaScraper() as scraper:
+    with _get_scraper(source) as scraper:
         properties = scraper.scrape(
             listing_type=listing_type,
             max_pages=max_pages,

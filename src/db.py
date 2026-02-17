@@ -23,9 +23,20 @@ def upsert_properties(properties: list[Property]) -> int:
     if not properties:
         return 0
 
+    # Filter out properties that violate NOT NULL constraints
+    valid = [p for p in properties if p.price is not None and p.location]
+    if len(valid) < len(properties):
+        import logging
+        logging.getLogger(__name__).warning(
+            "Skipped %d properties with missing price or location",
+            len(properties) - len(valid),
+        )
+    if not valid:
+        return 0
+
     client = get_client()
 
-    rows = [p.model_dump(mode="json") for p in properties]
+    rows = [p.model_dump(mode="json") for p in valid]
 
     # Remove fields managed by DB defaults
     for row in rows:

@@ -232,28 +232,126 @@ class TestParseLastPage:
 
 
 class TestParseDetailPage:
-    def test_with_coordinates(self):
+    def test_coordinates_from_map_data(self):
         html = """
         <script>
-        var OBJECT_MAP_DATA = {"LAT_LNG":[39.4699, -0.3763]};
+        var OBJECT_MAP_DATA = {"41.583766_2.2898":[{"title":"Test","lat":"41.583766","lng":"2.2898","id":"12345"}]};
         </script>
+        """
+        data = S._parse_detail_data(html, "12345")
+        assert data["latitude"] == pytest.approx(41.583766)
+        assert data["longitude"] == pytest.approx(2.2898)
+
+    def test_coordinates_from_schema(self):
+        html = """
+        <div itemprop="geo">
+            <meta itemprop="latitude" content="39.4699">
+            <meta itemprop="longitude" content="-0.3763">
+        </div>
         """
         data = S._parse_detail_data(html, "12345")
         assert data["latitude"] == pytest.approx(39.4699)
         assert data["longitude"] == pytest.approx(-0.3763)
 
-    def test_with_features(self):
+    def test_price_from_schema(self):
+        html = '<meta itemprop="price" content="698000">'
+        data = S._parse_detail_data(html, "12345")
+        assert data["detail_price"] == 698000.0
+
+    def test_gallery_images(self):
         html = """
-        <ul class="features">
-            <li>Swimming pool</li>
-            <li>Parking</li>
-            <li>Air conditioning</li>
-        </ul>
+        <div id="gallery_container">
+            <div class="thumbs"><div class="scroll"><ul>
+                <li><img src="thumb1.jpg" data-real="full1.jpg" data-big="full1.jpg"></li>
+                <li><img src="thumb2.jpg" data-real="full2.jpg" data-big="full2.jpg"></li>
+            </ul></div></div>
+        </div>
         """
         data = S._parse_detail_data(html, "12345")
-        assert "Swimming pool" in data["features"]
-        assert "Parking" in data["features"]
+        assert data["images"] == ["full1.jpg", "full2.jpg"]
+
+    def test_features_wrapped(self):
+        html = """
+        <div class="features wrapped">
+            <h3>Features</h3>
+            <ul>
+                <li class="prj_o_300">Balcony</li>
+                <li class="prj_o_27">Air Conditioners</li>
+            </ul>
+        </div>
+        <div class="features wrapped">
+            <h3>Indoor facilities</h3>
+            <ul>
+                <li class="prj_o_97">Elevator</li>
+            </ul>
+        </div>
+        """
+        data = S._parse_detail_data(html, "12345")
+        assert "Balcony" in data["features"]
+        assert "Air Conditioners" in data["features"]
+        assert "Elevator" in data["features"]
         assert len(data["features"]) == 3
+
+    def test_features_non_wrapped(self):
+        """Non-wrapped .features blocks (e.g. outdoor) must also be captured."""
+        html = """
+        <div class="features">
+            <h3 class="title-tag">Outdoor features</h3>
+            <ul>
+                <li class="prj_o_160">Children's playground</li>
+                <li class="prj_o_146">Swimming pool</li>
+            </ul>
+        </div>
+        <div class="features wrapped">
+            <h3 class="title-tag">Features</h3>
+            <ul>
+                <li class="prj_o_125">Terrace</li>
+            </ul>
+        </div>
+        """
+        data = S._parse_detail_data(html, "12345")
+        assert "Children's playground" in data["features"]
+        assert "Swimming pool" in data["features"]
+        assert "Terrace" in data["features"]
+        assert len(data["features"]) == 3
+
+    def test_description(self):
+        html = """
+        <div class="article" itemprop="description">
+            <h2>Property description</h2>
+            <p>A beautiful apartment near the beach.</p>
+        </div>
+        """
+        data = S._parse_detail_data(html, "12345")
+        assert "beautiful apartment" in data["description"]
+        assert not data["description"].startswith("Property description")
+
+    def test_specs_from_sidebar(self):
+        html = """
+        <div class="right_block parameters">
+            <div class="params">
+                <div class="city"><span class="name">City</span><span class="value">Barcelona</span></div>
+                <div class="tip"><span class="name">Type</span><span class="value">Apartment</span></div>
+                <div class="rooms"><span class="name">Bedrooms</span><span class="value">4</span></div>
+            </div>
+        </div>
+        """
+        data = S._parse_detail_data(html, "12345")
+        assert data["specs"]["City"] == "Barcelona"
+        assert data["specs"]["Bedrooms"] == "4"
+
+    def test_translation_urls(self):
+        html = """
+        <link rel="alternate" hreflang="en" href="https://spain-real.estate/property/o12345/">
+        <link rel="alternate" hreflang="es" href="https://spain-real.estate/es/property/o12345/">
+        <link rel="alternate" hreflang="ru" href="https://spain-real.estate/ru/property/o12345/">
+        <link rel="alternate" hreflang="x-default" href="https://spain-real.estate/property/o12345/">
+        """
+        data = S._parse_detail_data(html, "12345")
+        urls = data["_translation_urls"]
+        assert urls["es"] == "https://spain-real.estate/es/property/o12345/"
+        assert urls["ru"] == "https://spain-real.estate/ru/property/o12345/"
+        assert "x-default" not in urls
 
     def test_minimal(self):
         data = S._parse_detail_data("<html><body></body></html>", "12345")
@@ -262,7 +360,95 @@ class TestParseDetailPage:
         assert "images" not in data
 
 
+class TestParseTranslation:
+    def test_spanish_translation(self):
+        html = """
+        <html><body>
+        <h1>Apartamento en Barcelona, España 4 dormitorios</h1>
+        <div class="article" itemprop="description">
+            <h2>Descripción</h2>
+            <p>Un hermoso apartamento cerca de la playa.</p>
+        </div>
+        </body></html>
+        """
+        tr = S._parse_translation(html)
+        assert "Barcelona" in tr["title"]
+        assert "hermoso" in tr["description"]
+        assert not tr["description"].startswith("Descripción")
+
+    def test_features_extracted(self):
+        html = """
+        <html><body>
+        <h1>Test Property</h1>
+        <div class="features wrapped">
+            <ul>
+                <li>Balcony</li>
+                <li>Air Conditioning</li>
+            </ul>
+        </div>
+        <div class="features wrapped">
+            <ul>
+                <li>Elevator</li>
+            </ul>
+        </div>
+        </body></html>
+        """
+        tr = S._parse_translation(html)
+        assert tr["features"] == ["Balcony", "Air Conditioning", "Elevator"]
+
+    def test_en_translation_from_detail_page(self):
+        html = """
+        <html><body>
+        <h1>Apartment in Valencia, Spain 2 bedrooms, No. 141278</h1>
+        <div class="article" itemprop="description">
+            <h2>Description</h2>
+            <p>A lovely apartment with sea views.</p>
+        </div>
+        <div class="features wrapped">
+            <ul>
+                <li>Swimming Pool</li>
+                <li>Parking</li>
+            </ul>
+        </div>
+        </body></html>
+        """
+        tr = S._parse_translation(html)
+        assert "Valencia" in tr["title"]
+        assert "sea views" in tr["description"]
+        assert tr["features"] == ["Swimming Pool", "Parking"]
+
+
 # ── Property builder ────────────────────────────────────────────────
+
+
+class TestNormalizeSpecs:
+    def test_area_to_size(self):
+        specs = S.normalize_specs({"area": "80 m2"})
+        assert specs["size"] == 80
+        assert "area" not in specs
+
+    def test_numeric_strings(self):
+        specs = S.normalize_specs({"bedrooms": "2", "bathrooms": "3"})
+        assert specs["bedrooms"] == 2
+        assert specs["bathrooms"] == 3
+
+    def test_already_numeric(self):
+        specs = S.normalize_specs({"size": 120, "bedrooms": 3})
+        assert specs["size"] == 120
+        assert specs["bedrooms"] == 3
+
+    def test_preserves_other_keys(self):
+        specs = S.normalize_specs({"area": "80 m2", "City": "Valencia", "Type": "Apartment"})
+        assert specs["size"] == 80
+        assert specs["City"] == "Valencia"
+        assert specs["Type"] == "Apartment"
+
+    def test_empty_specs(self):
+        assert S.normalize_specs({}) == {}
+
+    def test_area_with_decimal(self):
+        specs = S.normalize_specs({"area": "120.5 m2"})
+        assert specs["size"] == 120
 
 
 class TestBuildProperty:
@@ -274,6 +460,7 @@ class TestBuildProperty:
             "rooms": "3",
             "bedrooms": "2",
             "bathrooms": "2",
+            "area": "80 m2",
             "thumbnail": "https://example.com/img.jpg",
             "source_url": "https://spain-real.estate/property/o141031/",
         }
@@ -287,7 +474,39 @@ class TestBuildProperty:
         assert prop.municipality == "Valencia"
         assert prop.province == "Valencia"
         assert len(prop.images) == 1
-        assert prop.specs["rooms"] == "3"
+        # Specs are normalized: int values, area→size
+        assert prop.specs["bedrooms"] == 2
+        assert prop.specs["bathrooms"] == 2
+        assert prop.specs["size"] == 80
+        assert "area" not in prop.specs
+
+    def test_es_title_as_primary(self):
+        item = {
+            "source_id": "141031",
+            "title": "Apartment in Valencia, Spain No. 141031",
+            "_es": {
+                "title": "Apartamento en Valencia, España No. 141031",
+                "description": "Un apartamento precioso.",
+            },
+        }
+        prop = S.build_property(item, listing_type="sale", tab="apartment")
+        # Primary title/description should be Spanish
+        assert prop.title == "Apartamento en Valencia, España No. 141031"
+        assert prop.description == "Un apartamento precioso."
+        # Location is still extracted from EN title
+        assert prop.municipality == "Valencia"
+        assert prop.province == "Valencia"
+
+    def test_fallback_to_en_when_no_es(self):
+        item = {
+            "source_id": "141031",
+            "title": "Apartment in Valencia, Spain No. 141031",
+            "description": "A lovely apartment.",
+        }
+        prop = S.build_property(item, listing_type="sale", tab="apartment")
+        # Falls back to EN when no _es data
+        assert prop.title == "Apartment in Valencia, Spain No. 141031"
+        assert prop.description == "A lovely apartment."
 
     def test_rent_from_monthly(self):
         item = {
@@ -309,6 +528,138 @@ class TestBuildProperty:
         item = {"source_id": "99", "title": "Land plot in Valencia, Spain No. 99"}
         prop = S.build_property(item, listing_type="sale", tab="unknown_tab")
         assert prop.sub_category == "plot"
+
+    def test_translations_attached(self):
+        item = {
+            "source_id": "141278",
+            "title": "Apartment in Valencia, Spain No. 141278",
+            "source_url": "https://spain-real.estate/property/o141278/",
+            "_translations": [
+                {
+                    "locale": "en",
+                    "title": "Apartment in Valencia, Spain No. 141278",
+                    "description": "A lovely apartment.",
+                    "features": ["Pool", "Parking"],
+                },
+                {
+                    "locale": "ru",
+                    "title": "Квартира в Валенсии, Испания",
+                    "description": "Прекрасная квартира.",
+                    "features": ["Бассейн", "Парковка"],
+                },
+            ],
+        }
+        prop = S.build_property(item, listing_type="sale", tab="apartment")
+        assert len(prop.translations) == 2
+        en = prop.translations[0]
+        assert en.locale == "en"
+        assert en.property_id == "spain-real-estate-141278"
+        assert en.title == "Apartment in Valencia, Spain No. 141278"
+        assert en.features == ["Pool", "Parking"]
+        ru = prop.translations[1]
+        assert ru.locale == "ru"
+        assert ru.property_id == "spain-real-estate-141278"
+        assert "Валенсии" in ru.title
+
+
+# ── enrich_property ─────────────────────────────────────────────────
+
+
+class TestEnrichProperty:
+    """Unit tests for enrich_property — HTTP calls are mocked."""
+
+    def _make_prop(self, source_id="141031", sub_category="apartment", listing_type="sale"):
+        from src.models import Property
+        return Property(
+            listing_type=listing_type,
+            sub_category=sub_category,
+            title="Apartment in Valencia, Spain No. 141031",
+            price=370000.0,
+            location="Valencia",
+            municipality="Valencia",
+            source="spain-real-estate",
+            source_id=source_id,
+            source_url=f"https://spain-real.estate/property/o{source_id}/",
+        )
+
+    def test_returns_enriched_flag_on_success(self, monkeypatch):
+        scraper = S()
+
+        detail_html = """
+        <html><head>
+        <link rel="alternate" hreflang="es" href="https://spain-real.estate/es/property/o141031/">
+        </head><body>
+        <h1>Apartment in Valencia, Spain No. 141031</h1>
+        <meta itemprop="price" content="370000">
+        <div class="article"><p>Great apartment.</p></div>
+        </body></html>
+        """
+        es_html = """
+        <html><body>
+        <h1>Apartamento en Valencia, España</h1>
+        <div class="article"><p>Gran apartamento.</p></div>
+        </body></html>
+        """
+
+        def fake_fetch(url, accept_language=None):
+            if "es/" in url:
+                return es_html
+            return detail_html
+
+        monkeypatch.setattr(scraper, "_fetch_page", fake_fetch)
+        monkeypatch.setattr(scraper, "_delay_sync", lambda: None)
+
+        prop = self._make_prop()
+        result = scraper.enrich_property(prop)
+
+        assert result.enriched is True
+        assert result.title == "Apartamento en Valencia, España"
+        assert any(t.locale == "en" for t in result.translations)
+
+    def test_returns_original_on_fetch_error(self, monkeypatch):
+        from src.scrapers.base import FetchError
+        scraper = S()
+
+        def fake_fetch(url, accept_language=None):
+            raise FetchError(403, url)
+
+        monkeypatch.setattr(scraper, "_fetch_page", fake_fetch)
+        monkeypatch.setattr(scraper, "_delay_sync", lambda: None)
+
+        prop = self._make_prop()
+        result = scraper.enrich_property(prop)
+
+        assert result is prop
+        assert result.enriched is False
+
+    def test_skips_when_no_source_url(self):
+        from src.models import Property
+        scraper = S()
+        prop = Property(
+            listing_type="sale",
+            title="No URL property",
+            source="spain-real-estate",
+            source_id="999",
+            source_url=None,
+        )
+        result = scraper.enrich_property(prop)
+        assert result is prop
+
+    def test_subcategory_to_tab_mapping(self, monkeypatch):
+        """enrich_property preserves sub_category via reverse tab lookup."""
+        scraper = S()
+
+        def fake_fetch(url, accept_language=None):
+            return "<html><body><h1>Villa in Valencia</h1></body></html>"
+
+        monkeypatch.setattr(scraper, "_fetch_page", fake_fetch)
+        monkeypatch.setattr(scraper, "_delay_sync", lambda: None)
+
+        prop = self._make_prop(sub_category="house")
+        result = scraper.enrich_property(prop)
+
+        assert result.enriched is True
+        assert result.sub_category == "house"
 
 
 # ── URL construction ────────────────────────────────────────────────

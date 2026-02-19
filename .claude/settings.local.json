@@ -10,7 +10,9 @@
       "WebFetch(domain:curl-cffi.readthedocs.io)",
       "WebFetch(domain:pypi.org)",
       "WebFetch(domain:spain-real.estate)",
-      "Bash(python -m pytest tests/test_spain_real_estate.py -v)"
+      "Bash(python -m pytest tests/test_spain_real_estate.py -v)",
+      "Bash(wc:*)",
+      "Bash(python -c:*)"
     ]
   }
 }

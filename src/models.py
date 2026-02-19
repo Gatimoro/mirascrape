@@ -5,6 +5,14 @@ from typing import Literal
 from pydantic import BaseModel, model_validator
 
 
+class Translation(BaseModel):
+    property_id: str = ""
+    locale: str
+    title: str | None = None
+    description: str | None = None
+    features: list[str] | None = None
+
+
 class Property(BaseModel):
     id: str = ""
     listing_type: Literal["sale", "rent", "new-building"]
@@ -27,6 +35,8 @@ class Property(BaseModel):
     source: str = "idealista"
     source_id: str
     source_url: str | None = None
+    enriched: bool = False
+    translations: list[Translation] = []
 
     @model_validator(mode="after")
     def set_id(self) -> Property:

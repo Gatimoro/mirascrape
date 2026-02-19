@@ -14,7 +14,7 @@ from selectolax.parser import HTMLParser
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from src.config import settings
-from src.models import Property
+from src.models import Property, Translation
 from src.scrapers.base import BaseScraper, FetchError
 
 logger = logging.getLogger(__name__)
@@ -92,14 +92,21 @@ class SpainRealEstateScraper(BaseScraper):
 
     RATE_LIMIT_COOLDOWN = 60  # seconds to wait on 403 before retrying
 
-    def _fetch_page(self, url: str) -> str:
-        """Fetch a page with rate-limit cooldown on 403."""
+    def _fetch_page(self, url: str, accept_language: str | None = None) -> str:
+        """Fetch a page with rate-limit cooldown on 403.
+
+        Args:
+            accept_language: Override Accept-Language header for this request only.
+                             Use for translation pages to ensure the site serves the
+                             correct locale (e.g. "es,es-ES;q=0.9").
+        """
         if self._use_browser:
             return self._fetch_with_browser(url)
 
         client = self._ensure_http()
+        req_headers = {"Accept-Language": accept_language} if accept_language else {}
         for attempt in range(settings.MAX_RETRIES):
-            resp = client.get(url)
+            resp = client.get(url, headers=req_headers)
             if resp.status_code == 403:
                 wait = self.RATE_LIMIT_COOLDOWN * (attempt + 1)
                 logger.warning(
@@ -317,56 +324,175 @@ class SpainRealEstateScraper(BaseScraper):
         tree = HTMLParser(html)
         data: dict = {}
 
-        # Coordinates from OBJECT_MAP_DATA JS variable
+        # Coordinates from OBJECT_MAP_DATA: {"lat_lng":[{"lat":"41.58","lng":"2.29",...}]}
         m = re.search(r"OBJECT_MAP_DATA\s*=\s*(\{.*?\});", html, re.DOTALL)
         if m:
             try:
                 map_data = json.loads(m.group(1))
-                lat_lng = map_data.get("LAT_LNG")
-                if lat_lng and len(lat_lng) >= 2:
-                    data["latitude"] = float(lat_lng[0])
-                    data["longitude"] = float(lat_lng[1])
+                # The key is "lat_lng" as a string; iterate first entry's list
+                for _key, entries in map_data.items():
+                    if isinstance(entries, list) and entries:
+                        entry = entries[0]
+                        lat = entry.get("lat")
+                        lng = entry.get("lng")
+                        if lat and lng:
+                            data["latitude"] = float(lat)
+                            data["longitude"] = float(lng)
+                        break
             except (json.JSONDecodeError, ValueError, TypeError):
-                logger.debug("Could not parse OBJECT_MAP_DATA for %s", source_id)
+                pass
+        # Fallback: schema.org meta tags
+        if "latitude" not in data:
+            lat_el = tree.css_first('meta[itemprop="latitude"]')
+            lng_el = tree.css_first('meta[itemprop="longitude"]')
+            if lat_el and lng_el:
+                try:
+                    data["latitude"] = float(lat_el.attributes.get("content", ""))
+                    data["longitude"] = float(lng_el.attributes.get("content", ""))
+                except ValueError:
+                    pass
 
-        # Gallery images
+        # Price from schema.org (clean integer, no parsing needed)
+        price_meta = tree.css_first('meta[itemprop="price"]')
+        if price_meta:
+            try:
+                data["detail_price"] = float(price_meta.attributes.get("content", ""))
+            except ValueError:
+                pass
+
+        # Gallery images — full-res from data-real attribute
         images: list[str] = []
-        for img in tree.css(".gallery_container img, .gallery img, .fotorama img"):
-            src = img.attributes.get("src") or img.attributes.get("data-src", "")
+        for img in tree.css("#gallery_container .thumbs img"):
+            src = (
+                img.attributes.get("data-real")
+                or img.attributes.get("data-big")
+                or img.attributes.get("src", "")
+            )
             if src and src not in images:
                 images.append(src)
+        # Fallback: main image
+        if not images:
+            main_img = tree.css_first(".main_image img")
+            if main_img:
+                src = main_img.attributes.get("src", "")
+                if src:
+                    images.append(src)
         if images:
             data["images"] = images
 
-        # Features
+        # Features from all feature lists (wrapped and non-wrapped)
         features: list[str] = []
-        for li_el in tree.css(".features li, .facilities li, .amenities li"):
+        for li_el in tree.css(".features ul li"):
             text = li_el.text(strip=True)
             if text:
                 features.append(text)
         if features:
             data["features"] = features
 
-        # Full description
-        desc_el = tree.css_first(".description, .object-description, .full-description")
+        # Description from article div
+        desc_el = tree.css_first('div.article[itemprop="description"], div.article')
         if desc_el:
-            data["description"] = desc_el.text(strip=True)
+            # Remove the heading element before extracting text
+            h2 = desc_el.css_first("h2")
+            if h2:
+                h2.decompose()
+            text = desc_el.text(strip=True)
+            if text:
+                data["description"] = text
 
-        # Additional specs from params
+        # Specs from right sidebar parameters
         specs: dict[str, str] = {}
-        for span in tree.css(".params span b, .characteristics span b"):
-            parent = span.parent
-            if parent:
-                label = parent.text(strip=True)
-                value = span.text(strip=True)
-                if label and value:
-                    key = label.replace(value, "").strip().rstrip(":")
-                    if key:
-                        specs[key] = value
+        for div in tree.css(".right_block.parameters .params > div"):
+            name_el = div.css_first("span.name")
+            value_el = div.css_first("span.value")
+            if name_el and value_el:
+                key = name_el.text(strip=True)
+                value = value_el.text(strip=True)
+                if key and value:
+                    specs[key] = value
+        # Also grab schema.org room counts
+        for prop_name, spec_key in [
+            ("numberOfRooms", "rooms"),
+            ("numberOfBedrooms", "bedrooms"),
+            ("numberOfBathroomsTotal", "bathrooms"),
+        ]:
+            el = tree.css_first(f'meta[itemprop="{prop_name}"]')
+            if el and spec_key not in specs:
+                val = el.attributes.get("content", "")
+                if val:
+                    specs[spec_key] = val
         if specs:
             data["specs"] = specs
 
+        # Extract hreflang URLs for translations
+        translations: dict[str, str] = {}
+        for link in tree.css('link[rel="alternate"][hreflang]'):
+            lang = link.attributes.get("hreflang", "")
+            href = link.attributes.get("href", "")
+            if lang and href and lang not in ("x-default",):
+                translations[lang] = href
+        if translations:
+            data["_translation_urls"] = translations
+
         return data
+
+    @staticmethod
+    def _parse_translation(html: str) -> dict[str, str | list[str]]:
+        """Extract title, description, and features from a translated detail page."""
+        tree = HTMLParser(html)
+        result: dict[str, str | list[str]] = {}
+
+        title_el = tree.css_first("h1")
+        if title_el:
+            result["title"] = title_el.text(strip=True)
+
+        desc_el = tree.css_first('div.article[itemprop="description"], div.article')
+        if desc_el:
+            h2 = desc_el.css_first("h2")
+            if h2:
+                h2.decompose()
+            text = desc_el.text(strip=True)
+            if text:
+                result["description"] = text
+
+        features: list[str] = []
+        for li_el in tree.css(".features ul li"):
+            text = li_el.text(strip=True)
+            if text:
+                features.append(text)
+        if features:
+            result["features"] = features
+
+        return result
+
+    # ── Specs normalization ──────────────────────────────────────────
+
+    @staticmethod
+    def normalize_specs(specs: dict) -> dict:
+        """Convert area/string specs to size/int specs expected by the app."""
+        result: dict = {}
+
+        # Rename 'area' → 'size', extract leading number, cast to int
+        area = specs.get("area") or specs.get("size")
+        if area is not None:
+            m = re.match(r"[\d.]+", str(area).strip())
+            if m:
+                result["size"] = int(float(m.group()))
+
+        for key in ("bedrooms", "bathrooms"):
+            val = specs.get(key)
+            if val is not None:
+                try:
+                    result[key] = int(val)
+                except (ValueError, TypeError):
+                    pass
+
+        # Preserve any other keys
+        for k, v in specs.items():
+            if k not in ("area", "size", "bedrooms", "bathrooms"):
+                result[k] = v
+
+        return result
 
     # ── Property builder ─────────────────────────────────────────────
 
@@ -377,30 +503,42 @@ class SpainRealEstateScraper(BaseScraper):
         tab: str,
     ) -> Property:
         """Assemble a Property from a parsed list-page item dict."""
-        title = item.get("title", f"Listing {item.get('source_id', 'unknown')}")
-        price = SpainRealEstateScraper.parse_price(item.get("price_text"))
+        # EN title used for sub_category guessing and location extraction
+        en_title = item.get("title", f"Listing {item.get('source_id', 'unknown')}")
+        # Prefer clean price from detail page schema.org, fall back to list-page text
+        price = item.get("detail_price") or SpainRealEstateScraper.parse_price(item.get("price_text"))
 
-        # Sub-category: from tab first, then from title
+        # Sub-category: from tab first, then from EN title
         sub_cat = TAB_SUB_CATEGORY.get(tab)
         if sub_cat is None:
-            sub_cat = SpainRealEstateScraper.guess_sub_category(title)
+            sub_cat = SpainRealEstateScraper.guess_sub_category(en_title)
 
-        # Location
-        loc = SpainRealEstateScraper.extract_location_from_title(title)
+        # Location (always from EN title which has "in City, Spain" pattern)
+        loc = SpainRealEstateScraper.extract_location_from_title(en_title)
+
+        # Primary title/description: prefer ES translation, fall back to EN
+        es_data = item.get("_es", {})
+        title = es_data.get("title") or en_title
+        description = (
+            es_data.get("description")
+            or item.get("description")
+            or item.get("excerpt")
+        )
 
         # If rental detected from price, override listing_type
         actual_listing_type = listing_type
         if item.get("is_rental"):
             actual_listing_type = "rent"
 
-        # Specs
-        specs: dict[str, str] = {}
+        # Specs — collect raw then normalize
+        raw_specs: dict = {}
         for key in ("rooms", "bedrooms", "bathrooms", "area"):
             if key in item:
-                specs[key] = item[key]
+                raw_specs[key] = item[key]
         # Merge any detail-page specs
         if "specs" in item:
-            specs.update(item["specs"])
+            raw_specs.update(item["specs"])
+        specs = SpainRealEstateScraper.normalize_specs(raw_specs)
 
         images = []
         if item.get("thumbnail"):
@@ -409,11 +547,27 @@ class SpainRealEstateScraper(BaseScraper):
             # Detail images supersede thumbnail
             images = item["images"]
 
+        source_id = str(item.get("source_id", ""))
+        property_id = f"spain-real-estate-{source_id}"
+
+        # Build translations
+        translations: list[Translation] = []
+        for tr_data in item.get("_translations", []):
+            translations.append(
+                Translation(
+                    property_id=property_id,
+                    locale=tr_data["locale"],
+                    title=tr_data.get("title"),
+                    description=tr_data.get("description"),
+                    features=tr_data.get("features"),
+                )
+            )
+
         return Property(
             listing_type=actual_listing_type,
             sub_category=sub_cat,
             title=title,
-            description=item.get("description") or item.get("excerpt"),
+            description=description,
             price=price,
             location=loc.get("municipality"),
             municipality=loc.get("municipality"),
@@ -424,9 +578,94 @@ class SpainRealEstateScraper(BaseScraper):
             specs=specs,
             features=item.get("features", []),
             source="spain-real-estate",
-            source_id=str(item.get("source_id", "")),
+            source_id=source_id,
             source_url=item.get("source_url"),
+            translations=translations,
         )
+
+    # ── Enrichment helpers ───────────────────────────────────────────
+
+    def _enrich_item(self, item: dict) -> dict:
+        """Fetch detail page + ES/RU translations for one item dict.
+
+        Mutates and returns item. Raises FetchError if the detail page fetch fails.
+        """
+        sid = item["source_id"]
+        detail_html = self._fetch_page(item["source_url"])
+        detail_data = self._parse_detail_data(detail_html, sid)
+        item.update(detail_data)
+
+        en_tr = self._parse_translation(detail_html)
+        if en_tr.get("title") or en_tr.get("description"):
+            item.setdefault("_translations", []).append({"locale": "en", **en_tr})
+
+        tr_urls = detail_data.get("_translation_urls", {})
+
+        es_url = tr_urls.get("es")
+        if es_url:
+            self._delay_sync()
+            try:
+                es_html = self._fetch_page(es_url, accept_language="es,es-ES;q=0.9")
+                es_tr = self._parse_translation(es_html)
+                if es_tr.get("title") or es_tr.get("description"):
+                    item["_es"] = es_tr
+            except FetchError:
+                logger.debug("Failed to fetch ES for %s", sid)
+
+        ru_url = tr_urls.get("ru")
+        if ru_url:
+            self._delay_sync()
+            try:
+                ru_html = self._fetch_page(ru_url, accept_language="ru,ru-RU;q=0.9")
+                ru_tr = self._parse_translation(ru_html)
+                if ru_tr.get("title") or ru_tr.get("description"):
+                    item.setdefault("_translations", []).append({"locale": "ru", **ru_tr})
+            except FetchError:
+                logger.debug("Failed to fetch RU for %s", sid)
+
+        return item
+
+    _SUBCATEGORY_TO_TAB: dict[str, str] = {
+        "apartment": "apartment",
+        "house": "villa",
+        "commerce": "commercial",
+        "plot": "land",
+    }
+
+    def enrich_property(self, prop: Property) -> Property:
+        """Fetch detail data for an existing Property and return an enriched copy.
+
+        Returns the original property unchanged if source_url is missing or the
+        detail page fetch fails — the caller must only mark enriched=True when this
+        returns a different object (check result.enriched).
+        """
+        if not prop.source_url:
+            logger.debug("No source_url for %s, skipping", prop.source_id)
+            return prop
+
+        en_title = next(
+            (t.title for t in prop.translations if t.locale == "en" and t.title),
+            prop.title,
+        )
+        item: dict = {
+            "source_id": prop.source_id,
+            "title": en_title,
+            "source_url": prop.source_url,
+            "detail_price": prop.price,
+            "is_rental": prop.listing_type == "rent",
+        }
+
+        self._delay_sync()
+        try:
+            item = self._enrich_item(item)
+        except FetchError as e:
+            logger.warning("Failed to enrich %s: %s", prop.source_id, e)
+            return prop
+
+        tab = self._SUBCATEGORY_TO_TAB.get(prop.sub_category or "", "apartment")
+        result = self.build_property(item, listing_type=prop.listing_type, tab=tab)
+        result.enriched = True
+        return result
 
     # ── Main orchestration ───────────────────────────────────────────
 
@@ -504,9 +743,7 @@ class SpainRealEstateScraper(BaseScraper):
                     if enrich and item.get("source_url"):
                         self._delay_sync()
                         try:
-                            detail_html = self._fetch_page(item["source_url"])
-                            detail_data = self._parse_detail_data(detail_html, sid)
-                            item.update(detail_data)
+                            item = self._enrich_item(item)
                         except FetchError as e:
                             logger.warning("Failed to enrich %s: %s", sid, e)
 

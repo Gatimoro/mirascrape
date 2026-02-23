@@ -174,6 +174,31 @@ class TestParseListPage:
         assert item.get("is_rental") is True
         assert item["area"] == "248 m2"
 
+    def test_rent_period_weekly(self):
+        html = """
+        <div class="objects-list switchable g4 listview"><ul>
+            <li data-object="144727">
+                <div class="price price-rent js-list-for-show">
+                    <span><span>€ 180</span><span class="rent-period">weekly</span></span>
+                </div>
+                <div class="info">
+                    <div class="title"><a href="/property/o144727/">Studio in Valencia</a></div>
+                </div>
+            </li>
+            <li data-object="144728">
+                <div class="price price-rent js-list-for-show">
+                    <span><span>€ 900</span><span class="rent-period">monthly</span></span>
+                </div>
+                <div class="info">
+                    <div class="title"><a href="/property/o144728/">Apartment in Valencia</a></div>
+                </div>
+            </li>
+        </ul></div>
+        """
+        items = S.parse_list_page(html)
+        assert items[0]["rent_period"] == "week"
+        assert items[1]["rent_period"] == "month"
+
     def test_relative_url_prefixed(self):
         items = S.parse_list_page(LIST_HTML)
         assert items[1]["source_url"] == "https://spain-real.estate/property/o141034/"
@@ -353,6 +378,22 @@ class TestParseDetailPage:
         assert urls["ru"] == "https://spain-real.estate/ru/property/o12345/"
         assert "x-default" not in urls
 
+    def test_rent_period_from_detail(self):
+        html = """
+        <div class="price js-list-for-show">
+            € 210
+            <span class="rent_period"> / weekly</span>
+        </div>
+        """
+        data = S._parse_detail_data(html, "144727")
+        assert data["rent_period"] == "week"
+
+    def test_rent_period_monthly_from_detail(self):
+        data = S._parse_detail_data(
+            '<span class="rent_period"> / monthly</span>', "999"
+        )
+        assert data["rent_period"] == "month"
+
     def test_minimal(self):
         data = S._parse_detail_data("<html><body></body></html>", "12345")
         assert "latitude" not in data
@@ -448,7 +489,7 @@ class TestNormalizeSpecs:
 
     def test_area_with_decimal(self):
         specs = S.normalize_specs({"area": "120.5 m2"})
-        assert specs["size"] == 120
+        assert specs["size"] == 120.5
 
 
 class TestBuildProperty:
@@ -518,6 +559,17 @@ class TestBuildProperty:
         prop = S.build_property(item, listing_type="sale", tab="apartment")
         assert prop.listing_type == "rent"
         assert prop.price == 12500.0
+
+    def test_rent_period_passed_through(self):
+        item = {
+            "source_id": "144727",
+            "title": "Studio in Valencia, Spain No. 144727",
+            "price_text": "\u20ac 180",
+            "is_rental": True,
+            "rent_period": "week",
+        }
+        prop = S.build_property(item, listing_type="rent", tab="apartment")
+        assert prop.rent_period == "week"
 
     def test_sub_category_from_tab(self):
         item = {"source_id": "99", "title": "Some property"}

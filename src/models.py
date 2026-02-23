@@ -21,6 +21,7 @@ class Property(BaseModel):
     title: str
     description: str | None = None
     price: float | None = None
+    rent_period: Literal["week", "month"] | None = None
     location: str | None = None
     region: str = "Comunidad Valenciana"
     province: str | None = None

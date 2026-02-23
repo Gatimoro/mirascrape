@@ -23,7 +23,10 @@ def _get_scraper(source: str) -> BaseScraper:
     if source == "spain-real-estate":
         from src.scrapers.spain_real_estate import SpainRealEstateScraper
         return SpainRealEstateScraper()
-    typer.echo(f"Unknown source: {source}. Available: idealista, spain-real-estate")
+    if source == "pisos-com":
+        from src.scrapers.pisos_com import PisosComScraper
+        return PisosComScraper()
+    typer.echo(f"Unknown source: {source}. Available: idealista, spain-real-estate, pisos-com")
     raise typer.Exit(code=1)
 
 
@@ -169,6 +172,7 @@ def _save_jsonl(path: Path, properties: list[Property]) -> None:
 @app.command()
 def enrich(
     input_file: Path = typer.Argument(..., help="JSONL file to enrich in place"),
+    batch_size: int = typer.Option(0, "--batch-size", "-b", help="Stop after enriching N properties (0 = no limit)"),
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Show debug logs"),
 ) -> None:
     """Fetch detail pages for unenriched properties, updating the file in place.
@@ -224,6 +228,10 @@ def enrich(
 
             # Save progress after every property so the file is always resumable
             _save_jsonl(input_file, properties)
+
+            if batch_size and n_enriched >= batch_size:
+                typer.echo(f"Batch of {batch_size} complete — re-run to continue.")
+                return
 
     typer.echo(f"Done: {n_enriched} enriched, {n_skipped} already done, {n_failed} failed")
 

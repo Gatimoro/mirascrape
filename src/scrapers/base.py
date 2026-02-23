@@ -29,6 +29,8 @@ class BaseScraper(ABC):
         self._browser = None
         self._context = None
         self._page = None
+        self._stop_requested: bool = False
+        self._original_sigint = None
 
     def _launch_browser(self) -> None:
         from patchright.sync_api import sync_playwright
@@ -68,6 +70,37 @@ class BaseScraper(ABC):
         delay = random.uniform(settings.REQUEST_DELAY_MIN, settings.REQUEST_DELAY_MAX)
         logger.debug("Sleeping %.1fs between requests", delay)
         time.sleep(delay)
+
+    def _install_sigint_handler(self) -> None:
+        import signal
+
+        def _handler(sig, frame):
+            self._stop_requested = True
+            print("\nInterrupt received — finishing current page...")
+
+        self._original_sigint = signal.signal(signal.SIGINT, _handler)
+
+    def _uninstall_sigint_handler(self) -> None:
+        import signal
+
+        if self._original_sigint is not None:
+            signal.signal(signal.SIGINT, self._original_sigint)
+            self._original_sigint = None
+
+    def _check_and_pause(self) -> bool:
+        """Return False if the caller should stop the loop."""
+        if not self._stop_requested:
+            return True
+        self._stop_requested = False
+        self._uninstall_sigint_handler()
+        print("\nScraping paused. Press Enter to continue, or Ctrl+C to stop and save.")
+        try:
+            input()
+            self._install_sigint_handler()
+            return True
+        except KeyboardInterrupt:
+            print()
+            return False
 
     @abstractmethod
     def scrape(

@@ -270,10 +270,15 @@ class SpainRealEstateScraper(BaseScraper):
                     if "\u20ac" in txt or "€" in txt:
                         data["price_text"] = txt
                         break
-                # Check if rental
-                rent_period = li.css_first("span.rent-period")
-                if rent_period:
+                # Check if rental and capture period
+                rent_period_el = li.css_first("span.rent-period")
+                if rent_period_el:
                     data["is_rental"] = True
+                    period_text = rent_period_el.text(strip=True).lower()
+                    if "week" in period_text:
+                        data["rent_period"] = "week"
+                    elif "month" in period_text:
+                        data["rent_period"] = "month"
 
             # Params
             for key in ("rooms", "bedrooms", "bathrooms"):
@@ -359,6 +364,15 @@ class SpainRealEstateScraper(BaseScraper):
                 data["detail_price"] = float(price_meta.attributes.get("content", ""))
             except ValueError:
                 pass
+
+        # Rent period from detail page (uses underscore class: span.rent_period)
+        rent_period_el = tree.css_first("span.rent_period")
+        if rent_period_el:
+            period_text = rent_period_el.text(strip=True).lower()
+            if "week" in period_text:
+                data["rent_period"] = "week"
+            elif "month" in period_text:
+                data["rent_period"] = "month"
 
         # Gallery images — full-res from data-real attribute
         images: list[str] = []
@@ -477,7 +491,7 @@ class SpainRealEstateScraper(BaseScraper):
         if area is not None:
             m = re.match(r"[\d.]+", str(area).strip())
             if m:
-                result["size"] = int(float(m.group()))
+                result["size"] = round(float(m.group()), 2)
 
         for key in ("bedrooms", "bathrooms"):
             val = specs.get(key)
@@ -569,6 +583,7 @@ class SpainRealEstateScraper(BaseScraper):
             title=title,
             description=description,
             price=price,
+            rent_period=item.get("rent_period"),
             location=loc.get("municipality"),
             municipality=loc.get("municipality"),
             province=loc.get("province"),
@@ -694,66 +709,74 @@ class SpainRealEstateScraper(BaseScraper):
         all_properties: list[Property] = []
         seen_ids: set[str] = set()
 
-        for tab in tabs:
-            logger.info("Scraping tab=%s listing_type=%s", tab, listing_type)
-            page = 1
-            tab_total = 0
-            total_pages = max_pages  # will be refined after page 1
+        self._stop_requested = False
+        self._install_sigint_handler()
+        try:
+            for tab in tabs:
+                logger.info("Scraping tab=%s listing_type=%s", tab, listing_type)
+                page = 1
+                tab_total = 0
+                total_pages = max_pages  # will be refined after page 1
 
-            while page <= min(max_pages, total_pages):
-                url = self.build_list_url(
-                    listing_type=listing_type,
-                    tab=tab,
-                    page=page,
-                    region=region,
-                    region_id=region_id,
-                )
-                logger.debug("Fetching page %d: %s", page, url)
+                while page <= min(max_pages, total_pages):
+                    url = self.build_list_url(
+                        listing_type=listing_type,
+                        tab=tab,
+                        page=page,
+                        region=region,
+                        region_id=region_id,
+                    )
+                    logger.debug("Fetching page %d: %s", page, url)
 
-                try:
-                    html = self._fetch_page(url)
-                except FetchError as e:
-                    logger.error("Failed to fetch page %d: %s", page, e)
-                    break
+                    try:
+                        html = self._fetch_page(url)
+                    except FetchError as e:
+                        logger.error("Failed to fetch page %d: %s", page, e)
+                        break
 
-                items = self.parse_list_page(html)
-                if not items:
-                    logger.info("No items on page %d, stopping tab=%s", page, tab)
-                    break
+                    items = self.parse_list_page(html)
+                    if not items:
+                        logger.info("No items on page %d, stopping tab=%s", page, tab)
+                        break
 
-                # On first page, determine total pages
-                if page == 1:
-                    total_count = self.parse_total_count(html)
-                    if total_count:
-                        total_pages = math.ceil(total_count / ITEMS_PER_PAGE)
-                        logger.info(
-                            "Tab %s: %d listings across %d pages",
-                            tab, total_count, total_pages,
-                        )
-                    else:
-                        total_pages = self.parse_last_page(html)
-                        logger.info("Tab %s: last page = %d", tab, total_pages)
+                    # On first page, determine total pages
+                    if page == 1:
+                        total_count = self.parse_total_count(html)
+                        if total_count:
+                            total_pages = math.ceil(total_count / ITEMS_PER_PAGE)
+                            logger.info(
+                                "Tab %s: %d listings across %d pages",
+                                tab, total_count, total_pages,
+                            )
+                        else:
+                            total_pages = self.parse_last_page(html)
+                            logger.info("Tab %s: last page = %d", tab, total_pages)
 
-                for item in items:
-                    sid = item.get("source_id", "")
-                    if sid in seen_ids:
-                        continue
-                    seen_ids.add(sid)
+                    for item in items:
+                        sid = item.get("source_id", "")
+                        if sid in seen_ids:
+                            continue
+                        seen_ids.add(sid)
 
-                    if enrich and item.get("source_url"):
-                        self._delay_sync()
-                        try:
-                            item = self._enrich_item(item)
-                        except FetchError as e:
-                            logger.warning("Failed to enrich %s: %s", sid, e)
+                        if enrich and item.get("source_url"):
+                            self._delay_sync()
+                            try:
+                                item = self._enrich_item(item)
+                            except FetchError as e:
+                                logger.warning("Failed to enrich %s: %s", sid, e)
 
-                    prop = self.build_property(item, listing_type, tab)
-                    all_properties.append(prop)
-                    tab_total += 1
+                        prop = self.build_property(item, listing_type, tab)
+                        all_properties.append(prop)
+                        tab_total += 1
 
-                logger.info("Page %d: parsed %d items (tab total: %d)", page, len(items), tab_total)
-                page += 1
-                self._delay_sync()
+                    logger.info("Page %d: parsed %d items (tab total: %d)", page, len(items), tab_total)
+                    page += 1
+                    self._delay_sync()
+                    if not self._check_and_pause():
+                        logger.info("Scraping stopped by user after %d properties", len(all_properties))
+                        return all_properties
+        finally:
+            self._uninstall_sigint_handler()
 
         logger.info("Total: %d unique properties scraped", len(all_properties))
         return all_properties

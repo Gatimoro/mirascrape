@@ -260,13 +260,23 @@ class PisosComScraper(BaseScraper):
             first_img = div.css_first("div.carousel__main-photo img")
             if first_img:
                 src = first_img.attributes.get("src") or first_img.attributes.get("data-src", "")
-                if src:
+                if src and "default_nophoto" not in src:
                     data["image"] = src
 
-            # Price
+            # Price — skip "A consultar", extract rent period from nested span
             price_el = div.css_first("span.ad-preview__price")
             if price_el:
-                data["price_text"] = price_el.text(strip=True)
+                price_text = price_el.text(strip=True)
+                if "consultar" in price_text.lower():
+                    continue
+                data["price_text"] = price_text
+                period_span = price_el.css_first("span")
+                if period_span:
+                    period = period_span.text(strip=True).lower()
+                    if "mes" in period:
+                        data["rent_period"] = "month"
+                    elif "sem" in period:
+                        data["rent_period"] = "week"
 
             # Title
             title_el = div.css_first("a.ad-preview__title")
@@ -351,6 +361,7 @@ class PisosComScraper(BaseScraper):
             title=title,
             description=item.get("description"),
             price=price,
+            rent_period=item.get("rent_period"),
             location=municipality,
             municipality=municipality,
             province=province,
@@ -381,6 +392,17 @@ class PisosComScraper(BaseScraper):
             except (KeyError, ValueError):
                 pass
 
+        # Rent period from price value span (e.g. "1.350 €<span>/mes</span>")
+        price_val_el = tree.css_first(".price__value")
+        if price_val_el:
+            period_span = price_val_el.css_first("span")
+            if period_span:
+                period = period_span.text(strip=True).lower()
+                if "mes" in period:
+                    data["rent_period"] = "month"
+                elif "sem" in period:
+                    data["rent_period"] = "week"
+
         # Title
         h1 = tree.css_first("h1")
         if h1:
@@ -404,35 +426,49 @@ class PisosComScraper(BaseScraper):
                 pass
 
         # Images — masonry gallery (higher res), fallback to carousel
+        # Skip no-photo placeholder items and default_nophoto URLs
         images: list[str] = []
-        for img in tree.css(".masonry__item img"):
-            src = img.attributes.get("src") or img.attributes.get("data-src", "")
-            if src and src not in images:
-                images.append(src)
+        for item in tree.css(".masonry__item"):
+            if "masonry__item--no-photos" in (item.attributes.get("class") or ""):
+                continue
+            for img in item.css("img"):
+                src = img.attributes.get("src") or img.attributes.get("data-src", "")
+                if src and "default_nophoto" not in src and src not in images:
+                    images.append(src)
         if not images:
             for img in tree.css(".carousel__slide img"):
                 src = img.attributes.get("src", "")
-                if src and src not in images:
+                if src and "default_nophoto" not in src and src not in images:
                     images.append(src)
         if images:
             data["images"] = images
 
-        # Specs — label→value dict + numeric extraction via _parse_chars
+        # Specs (label+value) and features (boolean flags, label only)
         raw_specs: dict = {}
         char_strings: list[str] = []
+        features: list[str] = []
         for feat in tree.css(".features__feature"):
             lbl_el = feat.css_first(".features__label")
             val_el = feat.css_first(".features__value")
-            if lbl_el and val_el:
-                label = lbl_el.text(strip=True).rstrip(":").strip()
+            if not lbl_el:
+                continue
+            label = lbl_el.text(strip=True).rstrip(":").strip()
+            if not label:
+                continue
+            if val_el:
                 value = val_el.text(strip=True)
-                if label and value:
+                if value:
                     raw_specs[label] = value
                     char_strings.append(value)
+            else:
+                # Boolean amenity flag — no value element
+                features.append(label)
 
         parsed = PisosComScraper._parse_chars(char_strings)
         if raw_specs or parsed:
             data["specs"] = {**raw_specs, **parsed}
+        if features:
+            data["features"] = features
 
         return data
 
@@ -466,16 +502,20 @@ class PisosComScraper(BaseScraper):
         detail = self._parse_detail_data(html)
 
         merged_specs = {**prop.specs, **detail.get("specs", {})}
+        merged_features = list(dict.fromkeys(prop.features + detail.get("features", [])))
         updates: dict = {
             "description": detail.get("description") or prop.description,
             "images": detail.get("images") or prop.images,
             "specs": merged_specs,
+            "features": merged_features,
             "enriched": True,
         }
         if detail.get("latitude") is not None:
             updates["latitude"] = detail["latitude"]
         if detail.get("longitude") is not None:
             updates["longitude"] = detail["longitude"]
+        if detail.get("rent_period") is not None:
+            updates["rent_period"] = detail["rent_period"]
 
         return prop.model_copy(update=updates)
 

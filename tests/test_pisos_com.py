@@ -351,6 +351,59 @@ class TestParseListPage:
     def test_second_listing_sub_category(self):
         assert self.items[1]["sub_category"] == "apartment"
 
+    def test_no_photo_placeholder_filtered(self):
+        html = """
+        <div id="12345.0" class="ad-preview" data-lnk-href="/comprar/piso-valencia-12345_0/">
+            <div class="carousel__main-photo carousel__main-photo--as-img">
+                <img src="https://statics.imghs.net/dist/img/default_nophoto.jpg">
+            </div>
+            <div class="ad-preview__bottom">
+                <span class="ad-preview__price">100.000 €</span>
+                <a href="/comprar/piso-valencia-12345_0/" class="ad-preview__title">Piso sin fotos</a>
+            </div>
+        </div>
+        """
+        items = PisosComScraper.parse_list_page(html)
+        assert len(items) == 1
+        assert "image" not in items[0]
+
+    def test_rent_period_month_from_price_span(self):
+        html = """
+        <div id="11111.0" class="ad-preview" data-lnk-href="/alquilar/piso-valencia-11111_0/">
+            <div class="ad-preview__bottom">
+                <span class="ad-preview__price">8.000 €<span>/mes</span></span>
+                <a href="/alquilar/piso-valencia-11111_0/" class="ad-preview__title">Nave en Massanassa</a>
+            </div>
+        </div>
+        """
+        items = PisosComScraper.parse_list_page(html)
+        assert items[0]["rent_period"] == "month"
+        assert items[0]["price_text"] == "8.000 €/mes"
+
+    def test_rent_period_week_from_price_span(self):
+        html = """
+        <div id="22222.0" class="ad-preview" data-lnk-href="/alquilar/piso-valencia-22222_0/">
+            <div class="ad-preview__bottom">
+                <span class="ad-preview__price">500 €<span>/sem</span></span>
+                <a href="/alquilar/piso-valencia-22222_0/" class="ad-preview__title">Estudio</a>
+            </div>
+        </div>
+        """
+        items = PisosComScraper.parse_list_page(html)
+        assert items[0]["rent_period"] == "week"
+
+    def test_a_consultar_skipped(self):
+        html = """
+        <div id="33333.0" class="ad-preview" data-lnk-href="/alquilar/nave-torrent-33333_0/">
+            <div class="ad-preview__bottom">
+                <span class="ad-preview__price">A consultar</span>
+                <a href="/alquilar/nave-torrent-33333_0/" class="ad-preview__title">Nave sin precio</a>
+            </div>
+        </div>
+        """
+        items = PisosComScraper.parse_list_page(html)
+        assert items == []
+
     def test_empty_page(self):
         assert PisosComScraper.parse_list_page("<html><body></body></html>") == []
 
@@ -430,6 +483,16 @@ class TestBuildProperty:
     def test_rent_listing_type(self):
         prop = PisosComScraper.build_property(self.item, "rent")
         assert prop.listing_type == "rent"
+
+    def test_rent_period_passed_through(self):
+        item = {
+            "source_id": "11111.0",
+            "title": "Nave en Massanassa",
+            "price_text": "8.000 €/mes",
+            "rent_period": "month",
+        }
+        prop = PisosComScraper.build_property(item, "rent")
+        assert prop.rent_period == "month"
 
 
 # ── province normalisation ────────────────────────────────────────────────────
@@ -568,11 +631,59 @@ class TestParseDetailData:
     def test_specs_size_parsed(self):
         assert self.data["specs"]["size"] == 22825.0
 
+    def test_rent_period_month(self):
+        html = """
+        <html><body>
+        <div class="price__value jsPriceValue">1.350 €<span>/mes</span></div>
+        </body></html>
+        """
+        data = PisosComScraper._parse_detail_data(html)
+        assert data["rent_period"] == "month"
+
+    def test_rent_period_week(self):
+        html = """
+        <html><body>
+        <div class="price__value jsPriceValue">500 €<span>/sem</span></div>
+        </body></html>
+        """
+        data = PisosComScraper._parse_detail_data(html)
+        assert data["rent_period"] == "week"
+
+    def test_no_rent_period_for_sale(self):
+        html = """
+        <html><body>
+        <div class="price__value jsPriceValue">250.000 €</div>
+        </body></html>
+        """
+        data = PisosComScraper._parse_detail_data(html)
+        assert "rent_period" not in data
+
     def test_empty_html(self):
         data = PisosComScraper._parse_detail_data("<html><body></body></html>")
         assert "price" not in data
         assert "latitude" not in data
         assert "images" not in data
+
+    def test_boolean_features_collected(self):
+        html = """
+        <html><body>
+        <div class="features-container">
+            <div class="features__feature">
+                <span class="features__label">Piscina</span>
+            </div>
+            <div class="features__feature">
+                <span class="features__label">Garaje</span>
+            </div>
+            <div class="features__feature">
+                <span class="features__label">Superficie: </span>
+                <span class="features__value">100 m²</span>
+            </div>
+        </div>
+        </body></html>
+        """
+        data = PisosComScraper._parse_detail_data(html)
+        assert data["features"] == ["Piscina", "Garaje"]
+        assert "Superficie" in data["specs"]
 
     def test_carousel_fallback(self):
         html = """
@@ -584,6 +695,32 @@ class TestParseDetailData:
         """
         data = PisosComScraper._parse_detail_data(html)
         assert data["images"] == ["https://fotos.imghs.net/carousel/photo1.jpg"]
+
+    def test_no_photos_item_skipped(self):
+        html = """
+        <html><body>
+        <div class="masonry">
+            <div class="masonry__item masonry__item--no-photos">
+                <div class="no-photo"><p>¡Vaya! Esta propiedad no tiene fotos</p></div>
+            </div>
+        </div>
+        </body></html>
+        """
+        data = PisosComScraper._parse_detail_data(html)
+        assert "images" not in data
+
+    def test_default_nophoto_url_filtered(self):
+        html = """
+        <html><body>
+        <div class="masonry">
+            <div class="masonry__item">
+                <img src="https://statics.imghs.net/dist/img/default_nophoto.jpg">
+            </div>
+        </div>
+        </body></html>
+        """
+        data = PisosComScraper._parse_detail_data(html)
+        assert "images" not in data
 
 
 # ── enrich_property ───────────────────────────────────────────────────────────
@@ -659,6 +796,20 @@ class TestEnrichProperty:
         result = scraper.enrich_property(prop)
         assert result is prop
         assert result.enriched is False
+
+    def test_rent_period_propagated_from_detail(self, monkeypatch):
+        detail_html = """
+        <html><body>
+        <div class="price__value jsPriceValue">1.350 €<span>/mes</span></div>
+        <div class="description__content">Nave en alquiler.</div>
+        </body></html>
+        """
+        scraper = PisosComScraper()
+        monkeypatch.setattr(scraper, "_fetch_page", lambda url: detail_html)
+        monkeypatch.setattr(scraper, "_delay_sync", lambda: None)
+
+        result = scraper.enrich_property(self._make_prop())
+        assert result.rent_period == "month"
 
     def test_returns_original_when_no_source_url(self):
         from src.models import Property

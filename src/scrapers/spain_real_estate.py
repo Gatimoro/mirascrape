@@ -668,6 +668,7 @@ class SpainRealEstateScraper(BaseScraper):
             "source_url": prop.source_url,
             "detail_price": prop.price,
             "is_rental": prop.listing_type == "rent",
+            "rent_period": prop.rent_period,
         }
 
         self._delay_sync()

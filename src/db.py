@@ -43,7 +43,7 @@ def upsert_properties(properties: list[Property]) -> int:
 
     # Remove fields managed by DB defaults or not in properties table
     for row in rows:
-        for key in ("views_count", "saves_count", "created_at", "updated_at", "translations", "enriched", "features"):
+        for key in ("views_count", "saves_count", "created_at", "updated_at", "translations", "enriched"):
             row.pop(key, None)
 
     BATCH_SIZE = 50
@@ -76,7 +76,6 @@ def upsert_translations(properties: list[Property]) -> int:
             row = tr.model_dump(mode="json")
             row["property_id"] = p.id
             row.pop("created_at", None)
-            row.pop("features", None)
             rows.append(row)
 
     if not rows:

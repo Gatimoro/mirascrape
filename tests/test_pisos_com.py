@@ -561,6 +561,34 @@ class TestHtmlEntityProvince:
         assert prop.province == "Valencia"
 
 
+# ── _normalise_image_url ──────────────────────────────────────────────────────
+
+class TestNormaliseImageUrl:
+    def test_fch_wp_to_h700(self):
+        url = "https://fotos.imghs.net/fch-wp/1055/307/photo.jpg"
+        assert PisosComScraper._normalise_image_url(url) == "https://fotos.imghs.net/h700-wp/1055/307/photo.jpg"
+
+    def test_fchm_wp_to_h700(self):
+        url = "https://fotos.imghs.net/fchm-wp/520494/photo2.jpg"
+        assert PisosComScraper._normalise_image_url(url) == "https://fotos.imghs.net/h700-wp/520494/photo2.jpg"
+
+    def test_mm_wp_to_h700(self):
+        url = "https://fotos.imghs.net/mm-wp/991284/photo1.jpg"
+        assert PisosComScraper._normalise_image_url(url) == "https://fotos.imghs.net/h700-wp/991284/photo1.jpg"
+
+    def test_already_h700_unchanged(self):
+        url = "https://fotos.imghs.net/h700-wp/1055/307/photo.jpg"
+        assert PisosComScraper._normalise_image_url(url) == url
+
+    def test_non_imghs_url_unchanged(self):
+        url = "https://statics.imghs.net/dist/img/default_nophoto.jpg"
+        assert PisosComScraper._normalise_image_url(url) == url
+
+    def test_list_page_image_normalised(self):
+        items = PisosComScraper.parse_list_page(LIST_PAGE_HTML)
+        assert "h700-wp" in items[0]["image"]
+
+
 # ── _parse_detail_data ────────────────────────────────────────────────────────
 
 DETAIL_HTML = """
@@ -621,6 +649,8 @@ class TestParseDetailData:
 
     def test_images(self):
         assert len(self.data["images"]) == 3
+        # All URLs normalized to h700-wp regardless of original format
+        assert all("h700-wp" in url for url in self.data["images"])
         assert "photo1.jpg" in self.data["images"][0]
         assert "photo3.jpg" in self.data["images"][2]
 
@@ -689,12 +719,12 @@ class TestParseDetailData:
         html = """
         <html><body>
         <div class="carousel__slide">
-            <img src="https://fotos.imghs.net/carousel/photo1.jpg">
+            <img src="https://fotos.imghs.net/fch-wp/999/photo1.jpg">
         </div>
         </body></html>
         """
         data = PisosComScraper._parse_detail_data(html)
-        assert data["images"] == ["https://fotos.imghs.net/carousel/photo1.jpg"]
+        assert data["images"] == ["https://fotos.imghs.net/h700-wp/999/photo1.jpg"]
 
     def test_no_photos_item_skipped(self):
         html = """

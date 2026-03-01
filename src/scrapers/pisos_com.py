@@ -22,6 +22,7 @@ logger = logging.getLogger(__name__)
 BASE_URL = "https://www.pisos.com"
 ITEMS_PER_PAGE = 30
 
+
 # List-page type slug → sub_category
 TYPE_TO_SUB_CATEGORY: dict[str, str] = {
     "pisos": "apartment",
@@ -180,6 +181,17 @@ class PisosComScraper(BaseScraper):
                     pass
         return specs
 
+    # ── Image URL normalisation ───────────────────────────────────────
+
+    @staticmethod
+    def _normalise_image_url(url: str) -> str:
+        """Rewrite any fotos.imghs.net image to h700-wp (HD) format.
+
+        All pisos.com image formats share the same path after the format segment:
+            fch-wp/1055/307/photo.jpg  →  h700-wp/1055/307/photo.jpg
+        """
+        return re.sub(r"(https?://fotos\.imghs\.net)/[^/]+/", r"\1/h700-wp/", url)
+
     # ── Sub-category ──────────────────────────────────────────────────
 
     @staticmethod
@@ -261,7 +273,7 @@ class PisosComScraper(BaseScraper):
             if first_img:
                 src = first_img.attributes.get("src") or first_img.attributes.get("data-src", "")
                 if src and "default_nophoto" not in src:
-                    data["image"] = src
+                    data["image"] = PisosComScraper._normalise_image_url(src)
 
             # Price — skip "A consultar", extract rent period from nested span
             price_el = div.css_first("span.ad-preview__price")
@@ -320,7 +332,7 @@ class PisosComScraper(BaseScraper):
                     if "image" not in data:
                         ld_img = ld.get("image") or ld.get("photo", {}).get("contentUrl")
                         if ld_img:
-                            data["image"] = ld_img
+                            data["image"] = PisosComScraper._normalise_image_url(ld_img)
                 except (json.JSONDecodeError, ValueError, TypeError):
                     pass
 
@@ -425,21 +437,28 @@ class PisosComScraper(BaseScraper):
             except (KeyError, ValueError, IndexError):
                 pass
 
-        # Images — masonry gallery (higher res), fallback to carousel
+        # Images — masonry grid; normalize all fotos.imghs.net URLs to h700-wp (HD)
         # Skip no-photo placeholder items and default_nophoto URLs
         images: list[str] = []
         for item in tree.css(".masonry__item"):
             if "masonry__item--no-photos" in (item.attributes.get("class") or ""):
                 continue
-            for img in item.css("img"):
-                src = img.attributes.get("src") or img.attributes.get("data-src", "")
-                if src and "default_nophoto" not in src and src not in images:
-                    images.append(src)
+            for img_el in item.css("img"):
+                src = img_el.attributes.get("src") or img_el.attributes.get("data-src", "")
+                if src and "default_nophoto" not in src:
+                    norm = PisosComScraper._normalise_image_url(src)
+                    if norm not in images:
+                        images.append(norm)
+
+        # Fallback: any carousel slide image (e.g. pages with no masonry)
         if not images:
-            for img in tree.css(".carousel__slide img"):
-                src = img.attributes.get("src", "")
-                if src and "default_nophoto" not in src and src not in images:
-                    images.append(src)
+            for img_el in tree.css(".carousel__slide img"):
+                src = img_el.attributes.get("src", "")
+                if src and "default_nophoto" not in src:
+                    norm = PisosComScraper._normalise_image_url(src)
+                    if norm not in images:
+                        images.append(norm)
+
         if images:
             data["images"] = images
 

@@ -26,7 +26,10 @@ def _get_scraper(source: str) -> BaseScraper:
     if source == "pisos-com":
         from src.scrapers.pisos_com import PisosComScraper
         return PisosComScraper()
-    typer.echo(f"Unknown source: {source}. Available: idealista, spain-real-estate, pisos-com")
+    if source == "fotocasa":
+        from src.scrapers.fotocasa import FotocasaScraper
+        return FotocasaScraper()
+    typer.echo(f"Unknown source: {source}. Available: idealista, spain-real-estate, pisos-com, fotocasa")
     raise typer.Exit(code=1)
 
 

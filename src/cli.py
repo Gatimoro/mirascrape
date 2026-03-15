@@ -29,7 +29,10 @@ def _get_scraper(source: str) -> BaseScraper:
     if source == "fotocasa":
         from src.scrapers.fotocasa import FotocasaScraper
         return FotocasaScraper()
-    typer.echo(f"Unknown source: {source}. Available: idealista, spain-real-estate, pisos-com, fotocasa")
+    if source == "habitaclia":
+        from src.scrapers.habitaclia import HabitacliaScraper
+        return HabitacliaScraper()
+    typer.echo(f"Unknown source: {source}. Available: idealista, spain-real-estate, pisos-com, fotocasa, habitaclia")
     raise typer.Exit(code=1)
 
 
@@ -219,7 +222,13 @@ def enrich(
                 n_skipped += 1
                 continue
 
-            result = scraper.enrich_property(prop)
+            try:
+                result = scraper.enrich_property(prop)
+            except Exception as exc:
+                # UserStop or any other unexpected error — file is already up to date
+                typer.echo(f"\nStopped: {exc}", err=True)
+                break
+
             properties[i] = result
 
             if result.enriched:
